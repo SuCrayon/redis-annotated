@@ -116,49 +116,86 @@ zskiplistNode *zslInsert(zskiplist *zsl, double score, robj *obj) {
     x = zsl->header;
     for (i = zsl->level-1; i >= 0; i--) {
         /* store rank that is crossed to reach the insert position */
+        // 初始化排位信息，如果是最顶层，则初始化为0，其他情况就是上一层的rank的值
+        // 比如从4层开始遍历，rank[3]=0，rank[2]=rank[3]
+        // 其实也很好理解，当前层的排位应该基于上一层的排位接着计数
         rank[i] = i == (zsl->level-1) ? 0 : rank[i+1];
         while (x->level[i].forward &&
             (x->level[i].forward->score < score ||
                 (x->level[i].forward->score == score &&
                 compareStringObjects(x->level[i].forward->obj,obj) < 0))) {
+            // 这里的比较除了根据score比较之外，还增加了score相同情况下根据obj（值）比较的场景
+            // 更新排位，增加跨度就是新的排位
             rank[i] += x->level[i].span;
             x = x->level[i].forward;
         }
+        // 记录节点（这个节点就是插入新节点的每一层对应的前驱节点）
+        // 如果说新节点的层级超过当前跳表的最高层级，这里是一定记录不到的，所以才有下面单独判断并处理的逻辑
+        // 保证代码逻辑统一也让代码更具可读性
         update[i] = x;
     }
     /* we assume the key is not already inside, since we allow duplicated
      * scores, and the re-insertion of score and redis object should never
      * happen since the caller of zslInsert() should test in the hash table
      * if the element is already inside or not. */
-    level = zslRandomLevel();
+    // 调用随机函数生成level
+    if (score == 3)  {
+        level = 1;
+    } else if (score == 6) {
+        level = 4;
+    } else if (score == 7) {
+        level = 1;
+    } else if (score == 7.5) {
+        level = 2;
+    } else if (score == 8) {
+        level = 4;
+    } else if (score == 9) {
+        level = 3;
+    } else {
+        level = zslRandomLevel();
+    }
+    // 如果新节点level超过当前跳表最高层
     if (level > zsl->level) {
+        // 只处理超出当前跳表最高层的部分
+        // （剩下的都会在遍历过程中被记录，只有超过的部分不会被记录，所以单独在这里处理）
         for (i = zsl->level; i < level; i++) {
+            // 排位初始化，和上面遍历过程的初始化逻辑相同
             rank[i] = 0;
+            // 新节点层级是最高的，所以只会有一个元素，前驱节点只能是header
             update[i] = zsl->header;
+            // 同理，只有一个元素，所以跨度就是跳表长度（没更新前，跳表长度在最后才更新，所以这里就是原长度）
             update[i]->level[i].span = zsl->length;
         }
+        // 更新跳表的最高层级
         zsl->level = level;
     }
     x = zslCreateNode(level,score,obj);
     for (i = 0; i < level; i++) {
+        // 从下往上更新
+        // 以下两句和链表插入的是相同的，就是将新节点插入的逻辑
         x->level[i].forward = update[i]->level[i].forward;
         update[i]->level[i].forward = x;
 
         /* update span covered by update[i] as x is inserted here */
+        // 根据每层节点的排位推算出跨度
         x->level[i].span = update[i]->level[i].span - (rank[0] - rank[i]);
         update[i]->level[i].span = (rank[0] - rank[i]) + 1;
     }
 
     /* increment span for untouched levels */
     for (i = level; i < zsl->level; i++) {
+        // 对于新节点没有涉及到的层级，跨度直接自增1即可
         update[i]->level[i].span++;
     }
-
+    // 更新BW指针，BW指针没有多层的概念
     x->backward = (update[0] == zsl->header) ? NULL : update[0];
     if (x->level[0].forward)
+        // 如果新节点不是最后一个节点，那就要更新后继节点BW指向新节点
         x->level[0].forward->backward = x;
     else
+        // 新节点是最后一个节点，更新tail
         zsl->tail = x;
+    // 跳表长度自增1
     zsl->length++;
     return x;
 }
